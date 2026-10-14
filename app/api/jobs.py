@@ -13,7 +13,7 @@ from app.schemas.job import (
     JobCreateResponse,
     JobStatusResponse,
 )
-from app.services.download_service import build_job_zip, safe_name
+from app.services.download_service import build_job_zip, permitted_download_path, safe_name
 from app.services.job_processor import process_job
 from app.services.job_query import (
     build_certificate_item,
@@ -87,10 +87,11 @@ def download_certificate(job_id: str, certificate_id: str, db=Depends(get_db)):
         raise HTTPException(
             status_code=409, detail=f"Certificate is not available (status: {certificate.status})"
         )
-    if certificate.file_path is None or not os.path.isfile(certificate.file_path):
+    allowed_path = permitted_download_path(certificate.file_path)
+    if allowed_path is None:
         raise HTTPException(status_code=404, detail="Certificate file not found")
     return FileResponse(
-        certificate.file_path,
+        str(allowed_path),
         media_type="application/pdf",
         filename=f"{safe_name(certificate.recipient_name)}_certificate.pdf",
     )

@@ -39,6 +39,8 @@ def client(session_factory, certs_dir, monkeypatch):
     app.dependency_overrides[get_db] = override_get_db
     monkeypatch.setattr("app.services.job_processor.SessionLocal", session_factory)
     monkeypatch.setattr("app.services.job_processor.CERTIFICATES_DIR", certs_dir)
+    monkeypatch.setattr("app.core.config.CERTIFICATES_DIR", certs_dir)
+    monkeypatch.setattr("app.services.download_service.CERTIFICATES_DIR", certs_dir, raising=False)
     yield TestClient(app)
     app.dependency_overrides.clear()
 

@@ -297,6 +297,8 @@ def test_build_job_zip_handles_name_collisions_and_missing_files(tmp_path, monke
     zip_tmp = tmp_path / "ziptmp"
     zip_tmp.mkdir()
     monkeypatch.setattr(_tempfile, "tempdir", str(zip_tmp))
+    monkeypatch.setattr("app.core.config.CERTIFICATES_DIR", str(tmp_path))
+    monkeypatch.setattr("app.services.download_service.CERTIFICATES_DIR", str(tmp_path), raising=False)
 
     file_one = tmp_path / "one.pdf"
     file_one.write_bytes(b"%PDF-1")
@@ -334,6 +336,123 @@ def test_build_job_zip_returns_none_when_no_file_exists(tmp_path, monkeypatch):
     assert build_job_zip(certificates) is None
     assert build_job_zip([]) is None
     assert os.listdir(zip_tmp) == []
+
+
+def test_download_rejects_path_traversal_outside_certificates_root(client, session_factory, tmp_path):
+    data = submit(client, GOOD_RECIPIENTS)
+    job_id = data["job_id"]
+
+    db = session_factory()
+    try:
+        cert = (
+            db.query(Certificate)
+            .filter(Certificate.job_id == job_id, Certificate.status == "success")
+            .first()
+        )
+        outside_file = tmp_path / "outside.pdf"
+        outside_file.write_bytes(b"%PDF-outside")
+        cert.file_path = str(tmp_path / ".." / outside_file.name)
+        db.commit()
+        cert_id = cert.id
+    finally:
+        db.close()
+
+    response = client.get(f"/jobs/{job_id}/certificates/{cert_id}/download")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Certificate file not found"
+
+
+def test_zip_rejects_certificates_whose_paths_escape_root(client, session_factory, tmp_path):
+    data = submit(client, GOOD_RECIPIENTS)
+    job_id = data["job_id"]
+
+    db = session_factory()
+    try:
+        for cert in db.query(Certificate).filter(
+            Certificate.job_id == job_id, Certificate.status == "success"
+        ).all():
+            cert.file_path = str(tmp_path / "../outside.pdf")
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(f"/jobs/{job_id}/download")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "No certificates available for download"
+
+
+def test_build_job_zip_prunes_paths_outside_permitted_root(tmp_path, monkeypatch):
+    import tempfile as _tempfile
+
+    root = tmp_path / "certificates"
+    (root / "job").mkdir(parents=True)
+    inside = root / "job" / "inside.pdf"
+    inside.write_bytes(b"%PDF-inside")
+
+    zip_tmp = tmp_path / "ziptmp"
+    zip_tmp.mkdir()
+    monkeypatch.setattr(_tempfile, "tempdir", str(zip_tmp))
+    monkeypatch.setattr("app.core.config.CERTIFICATES_DIR", str(root))
+    monkeypatch.setattr("app.services.download_service.CERTIFICATES_DIR", str(root), raising=False)
+
+    certificates = [
+        SimpleNamespace(id="11111111-aaaa", recipient_name="Anna", file_path=str(inside)),
+        SimpleNamespace(
+            id="22222222-bbbb",
+            recipient_name="Ravi",
+            file_path=str(tmp_path / "outside.pdf"),
+        ),
+    ]
+    (tmp_path / "outside.pdf").write_bytes(b"%PDF-outside")
+
+    zip_path = build_job_zip(certificates)
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            assert zf.namelist() == ["Anna_11111111.pdf"]
+            assert zf.read("Anna_11111111.pdf") == b"%PDF-inside"
+    finally:
+        os.remove(zip_path)
+    assert os.listdir(zip_tmp) == []
+
+
+def test_download_rejects_symlink_escape_when_supported(client, session_factory, tmp_path):
+    root = tmp_path / "certs"
+    root.mkdir()
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"%PDF-outside")
+    link = root / "job" / "link.pdf"
+    link.parent.mkdir(parents=True)
+
+    try:
+        os.symlink(outside, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links are not supported on this platform")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("app.core.config.CERTIFICATES_DIR", str(root))
+    monkeypatch.setattr("app.services.download_service.CERTIFICATES_DIR", str(root), raising=False)
+
+    data = submit(client, GOOD_RECIPIENTS)
+    job_id = data["job_id"]
+
+    db = session_factory()
+    try:
+        cert = (
+            db.query(Certificate)
+            .filter(Certificate.job_id == job_id, Certificate.status == "success")
+            .first()
+        )
+        cert.file_path = str(link)
+        db.commit()
+        cert_id = cert.id
+    finally:
+        db.close()
+
+    response = client.get(f"/jobs/{job_id}/certificates/{cert_id}/download")
+    monkeypatch.undo()
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Certificate file not found"
 
 
 def test_build_job_zip_preserves_original_exception_on_creation_failure(tmp_path, monkeypatch):
