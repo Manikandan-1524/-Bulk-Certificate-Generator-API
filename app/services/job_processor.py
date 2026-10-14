@@ -47,10 +47,23 @@ def process_job(job_id: str) -> None:
         if job is None:
             return
 
-        try:
-            job.status = "processing"
-            db.commit()
+        # Atomically claim a pending job so duplicate background tasks or repeated
+        # processing calls cannot generate certificates or advance the same job twice.
+        claimed = (
+            db.query(Job)
+            .filter(Job.id == job_id, Job.status == "pending")
+            .update({"status": "processing"}, synchronize_session=False)
+        )
+        db.commit()
 
+        if claimed != 1:
+            return
+
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if job is None:
+            return
+
+        try:
             pending = (
                 db.query(Certificate)
                 .filter(Certificate.job_id == job_id, Certificate.status == "pending")
