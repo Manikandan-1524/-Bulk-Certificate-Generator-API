@@ -7,11 +7,13 @@ from app.api.jobs import router as jobs_router
 from app.api.ui import router as ui_router
 from app.core.database import Base, engine
 from app.models import Certificate, Job  # noqa: F401
+from app.services.job_processor import recover_interrupted_jobs
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    recover_interrupted_jobs()
     yield
 
 

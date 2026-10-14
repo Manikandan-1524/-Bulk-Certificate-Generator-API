@@ -77,3 +77,78 @@ def process_job(job_id: str) -> None:
         db.commit()
     finally:
         db.close()
+
+
+INTERRUPTED_JOB_RECOVERY_REASON = (
+    "Processing stopped unexpectedly during application restart"
+)
+
+
+def recover_interrupted_jobs(db=None):
+    """Finalize jobs abandoned in ``processing`` by a previous shutdown.
+
+    The function only touches certificate rows that are still ``pending`` and
+    never resumes generation, which keeps it idempotent and avoids duplicate PDF
+    generation.
+    """
+
+    owns_session = db is None
+    if owns_session:
+        db = SessionLocal()
+
+    try:
+        interrupted_jobs = (
+            db.query(Job).filter(Job.status == "processing").all()
+        )
+        for job in interrupted_jobs:
+            db.query(Certificate).filter(
+                Certificate.job_id == job.id,
+                Certificate.status == "pending",
+            ).update(
+                {
+                    "status": "failed",
+                    "error_message": INTERRUPTED_JOB_RECOVERY_REASON,
+                },
+                synchronize_session=False,
+            )
+
+            success = (
+                db.query(Certificate)
+                .filter(
+                    Certificate.job_id == job.id,
+                    Certificate.status == "success",
+                )
+                .count()
+            )
+            failed = (
+                db.query(Certificate)
+                .filter(
+                    Certificate.job_id == job.id,
+                    Certificate.status == "failed",
+                )
+                .count()
+            )
+
+            job.success_count = success
+            job.failed_count = failed
+            if success == 0:
+                job.status = "failed"
+            elif failed == 0:
+                job.status = "completed"
+            else:
+                job.status = "completed_with_errors"
+
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        if owns_session:
+            db.close()
+    return len(interrupted_jobs)
+
+
+# Compatibility aliases for callers that use a different conventional name.
+recover_interrupted_job = recover_interrupted_jobs
+recover_processing_jobs = recover_interrupted_jobs
+job_status_recovery = recover_interrupted_jobs
