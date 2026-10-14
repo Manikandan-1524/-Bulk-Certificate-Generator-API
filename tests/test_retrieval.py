@@ -512,7 +512,8 @@ def test_build_job_zip_attempts_cleanup_before_reraising_original_exception(tmp_
         build_job_zip(certificates)
 
     assert len(cleanup_calls) == 1
-    assert os.path.dirname(cleanup_calls[0]) == str(zip_tmp)
+    from app.services.download_service import _zip_temp_root
+    assert os.path.dirname(cleanup_calls[0]).startswith(str(_zip_temp_root()))
     assert os.listdir(zip_tmp) == []
 
 
@@ -549,7 +550,8 @@ def test_build_job_zip_preserves_original_exception_when_cleanup_raises(tmp_path
             build_job_zip(certificates)
 
         assert len(cleanup_attempts) == 1
-        assert os.path.dirname(cleanup_attempts[0]) == str(zip_tmp)
+        from app.services.download_service import _zip_temp_root
+        assert os.path.dirname(cleanup_attempts[0]).startswith(str(_zip_temp_root()))
     finally:
         # The monkeypatch intentionally prevented deletion; clean up manually.
         for path in zip_tmp.iterdir():
