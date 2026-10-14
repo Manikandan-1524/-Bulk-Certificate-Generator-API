@@ -83,6 +83,10 @@ INTERRUPTED_JOB_RECOVERY_REASON = (
     "Processing stopped unexpectedly during application restart"
 )
 
+STALE_PENDING_JOB_RECOVERY_REASON = (
+    "Processing did not start before application shutdown"
+)
+
 
 def recover_interrupted_jobs(db=None):
     """Finalize jobs abandoned in ``processing`` by a previous shutdown.
@@ -97,17 +101,27 @@ def recover_interrupted_jobs(db=None):
         db = SessionLocal()
 
     try:
-        interrupted_jobs = (
-            db.query(Job).filter(Job.status == "processing").all()
+        # Startup is the only point where a persisted pending job cannot have
+        # an actively queued background task. Treat both statuses as stale before
+        # the application accepts requests, without resubmitting anything.
+        recoverable_jobs = (
+            db.query(Job)
+            .filter(Job.status.in_(("processing", "pending")))
+            .all()
         )
-        for job in interrupted_jobs:
+        for job in recoverable_jobs:
+            reason = (
+                INTERRUPTED_JOB_RECOVERY_REASON
+                if job.status == "processing"
+                else STALE_PENDING_JOB_RECOVERY_REASON
+            )
             db.query(Certificate).filter(
                 Certificate.job_id == job.id,
                 Certificate.status == "pending",
             ).update(
                 {
                     "status": "failed",
-                    "error_message": INTERRUPTED_JOB_RECOVERY_REASON,
+                    "error_message": reason,
                 },
                 synchronize_session=False,
             )
@@ -145,7 +159,7 @@ def recover_interrupted_jobs(db=None):
     finally:
         if owns_session:
             db.close()
-    return len(interrupted_jobs)
+    return len(recoverable_jobs)
 
 
 # Compatibility aliases for callers that use a different conventional name.
