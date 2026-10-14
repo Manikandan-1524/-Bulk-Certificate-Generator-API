@@ -34,6 +34,9 @@ def build_job_zip(certificates: list[Certificate]) -> str | None:
             return None
         return path
     except Exception:
-        if os.path.exists(path):
-            os.remove(path)
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
         raise

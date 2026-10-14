@@ -334,3 +334,105 @@ def test_build_job_zip_returns_none_when_no_file_exists(tmp_path, monkeypatch):
     assert build_job_zip(certificates) is None
     assert build_job_zip([]) is None
     assert os.listdir(zip_tmp) == []
+
+
+def test_build_job_zip_preserves_original_exception_on_creation_failure(tmp_path, monkeypatch):
+    import tempfile as _tempfile
+    import zipfile
+
+    zip_tmp = tmp_path / "ziptmp"
+    zip_tmp.mkdir()
+    monkeypatch.setattr(_tempfile, "tempdir", str(zip_tmp))
+
+    class FailingZipFile:
+        def __init__(*args, **kwargs):
+            raise RuntimeError("forced zip creation failure")
+
+    monkeypatch.setattr(zipfile, "ZipFile", FailingZipFile)
+
+    certificates = [
+        SimpleNamespace(id="11111111-aaaa", recipient_name="Anna", file_path=str(tmp_path / "anna.pdf")),
+    ]
+
+    with pytest.raises(RuntimeError, match="forced zip creation failure"):
+        build_job_zip(certificates)
+
+    # Successful cleanup should not leave temporary files behind.
+    assert os.listdir(zip_tmp) == []
+
+
+def test_build_job_zip_attempts_cleanup_before_reraising_original_exception(tmp_path, monkeypatch):
+    import tempfile as _tempfile
+    import zipfile
+    import os as real_os
+
+    zip_tmp = tmp_path / "ziptmp"
+    zip_tmp.mkdir()
+    monkeypatch.setattr(_tempfile, "tempdir", str(zip_tmp))
+
+    class FailingZipFile:
+        def __init__(*args, **kwargs):
+            raise RuntimeError("forced zip creation failure")
+
+    monkeypatch.setattr(zipfile, "ZipFile", FailingZipFile)
+
+    real_remove = real_os.remove
+    cleanup_calls = []
+
+    def counting_remove(path, *args, **kwargs):
+        cleanup_calls.append(path)
+        return real_remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(real_os, "remove", counting_remove)
+
+    certificates = [
+        SimpleNamespace(id="22222222-bbbb", recipient_name="Ravi", file_path=str(tmp_path / "ravi.pdf")),
+    ]
+
+    with pytest.raises(RuntimeError, match="forced zip creation failure"):
+        build_job_zip(certificates)
+
+    assert len(cleanup_calls) == 1
+    assert os.path.dirname(cleanup_calls[0]) == str(zip_tmp)
+    assert os.listdir(zip_tmp) == []
+
+
+def test_build_job_zip_preserves_original_exception_when_cleanup_raises(tmp_path, monkeypatch):
+    import tempfile as _tempfile
+    import zipfile
+    import os as real_os
+
+    zip_tmp = tmp_path / "ziptmp"
+    zip_tmp.mkdir()
+    monkeypatch.setattr(_tempfile, "tempdir", str(zip_tmp))
+
+    class FailingZipFile:
+        def __init__(*args, **kwargs):
+            raise RuntimeError("forced zip creation failure")
+
+    monkeypatch.setattr(zipfile, "ZipFile", FailingZipFile)
+
+    cleanup_attempts = []
+    real_remove = real_os.remove
+
+    def failing_remove(path, *args, **kwargs):
+        cleanup_attempts.append(path)
+        raise OSError("forced cleanup failure")
+
+    monkeypatch.setattr(real_os, "remove", failing_remove)
+
+    try:
+        certificates = [
+            SimpleNamespace(id="33333333-cccc", recipient_name="Zoe", file_path=str(tmp_path / "zoe.pdf")),
+        ]
+
+        with pytest.raises(RuntimeError, match="forced zip creation failure"):
+            build_job_zip(certificates)
+
+        assert len(cleanup_attempts) == 1
+        assert os.path.dirname(cleanup_attempts[0]) == str(zip_tmp)
+    finally:
+        # The monkeypatch intentionally prevented deletion; clean up manually.
+        for path in zip_tmp.iterdir():
+            if path.is_file():
+                real_remove(path)
