@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from app.services.job_processor import process_job
+from app.services.job_processor import _safe_remove_generated_pdf, process_job
 
 from tests.helpers import (
     ANNA,
@@ -143,3 +143,71 @@ def test_unexpected_processing_error_does_not_leave_job_stuck(client, monkeypatc
 
 def test_process_job_with_unknown_id_does_nothing(client):
     assert process_job("does-not-exist") is None
+
+
+def test_safe_remove_generated_pdf_removes_partial_inside_root(tmp_path, monkeypatch):
+    root = tmp_path / "certificates"
+    root.mkdir()
+    certificate_dir = root / "job-id"
+    certificate_dir.mkdir()
+    partial = certificate_dir / "partial.pdf"
+    partial.write_bytes(b"partial")
+
+    monkeypatch.setattr("app.services.job_processor.CERTIFICATES_DIR", str(root))
+    _safe_remove_generated_pdf(str(partial))
+
+    assert not partial.exists()
+
+
+def test_safe_remove_generated_pdf_does_not_delete_outside_file(tmp_path, monkeypatch):
+    root = tmp_path / "certificates"
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("do not delete", encoding="utf-8")
+
+    monkeypatch.setattr("app.services.job_processor.CERTIFICATES_DIR", str(root))
+    _safe_remove_generated_pdf(str(outside.resolve()))
+
+    assert outside.exists()
+    assert outside.read_text(encoding="utf-8") == "do not delete"
+
+
+def test_safe_remove_generated_pdf_does_not_follow_symlink_escape(tmp_path, monkeypatch):
+    root = tmp_path / "certificates"
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("do not delete", encoding="utf-8")
+    link = root / "link.pdf"
+
+    try:
+        os.symlink(outside, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links are not supported on this platform")
+
+    monkeypatch.setattr("app.services.job_processor.CERTIFICATES_DIR", str(root))
+    _safe_remove_generated_pdf(str(link))
+
+    assert outside.exists()
+    assert outside.read_text(encoding="utf-8") == "do not delete"
+    assert link.exists()
+
+
+def test_generation_error_remains_original_when_partial_cleanup_fails(client, monkeypatch, certs_dir):
+    def broken(recipient_name, course_name, issue_date, output_path):
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, "wb") as f:
+            f.write(b"partial")
+        raise RuntimeError("forced failure")
+
+    monkeypatch.setattr("app.services.job_processor.generate_certificate_pdf", broken)
+    monkeypatch.setattr("app.services.job_processor.os.remove", lambda path: (_ for _ in ()).throw(OSError("cleanup failed")))
+
+    data = submit(client, [ANNA])
+    job_id = data["job_id"]
+
+    response = client.get(f"/jobs/{job_id}")
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+
+    items = get_certificate_list(client, job_id)["certificates"]
+    assert all("forced failure" in item["error_message"] for item in items)

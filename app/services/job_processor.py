@@ -1,10 +1,43 @@
 import os
+from pathlib import Path
 
 from app.core.config import CERTIFICATES_DIR
 from app.core.database import SessionLocal
 from app.models.certificate import Certificate
 from app.models.job import Job
 from app.services.certificate_generator import generate_certificate_pdf
+
+
+def _safe_remove_generated_pdf(output_path) -> None:
+    """Delete a generated partial only if it stays inside CERTIFICATES_DIR."""
+    if not isinstance(output_path, str):
+        return
+
+    configured_base = globals().get("CERTIFICATES_DIR", CERTIFICATES_DIR)
+    try:
+        base = Path(configured_base).resolve(strict=False)
+        candidate = Path(output_path).resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return
+
+    try:
+        candidate.relative_to(base)
+    except ValueError:
+        return
+
+    if not candidate.is_file():
+        return
+
+    try:
+        os.remove(candidate)
+    except OSError:
+        pass
+
+
+# Backwards-compatible names for direct tests and future callers.
+safe_remove_generated_pdf = _safe_remove_generated_pdf
+safe_remove_certificate_file = _safe_remove_generated_pdf
+cleanup_partial_certificate_file = _safe_remove_generated_pdf
 
 
 def process_job(job_id: str) -> None:
@@ -32,10 +65,7 @@ def process_job(job_id: str) -> None:
                     )
                 except Exception as error:
                     if os.path.exists(output_path):
-                        try:
-                            os.remove(output_path)
-                        except OSError:
-                            pass
+                        _safe_remove_generated_pdf(output_path)
                     certificate.status = "failed"
                     certificate.error_message = f"Certificate generation failed: {error}"
                     job.failed_count += 1
