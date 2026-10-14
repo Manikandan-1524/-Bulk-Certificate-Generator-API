@@ -72,9 +72,7 @@ def test_job_fails_only_the_unsupported_certificates(client, certs_dir):
     failed_list = get_certificate_list(client, job_id, "?status=failed")
     assert failed_list["total"] == 2
     for item in failed_list["certificates"]:
-        assert item["error_message"] is not None
-        assert "Certificate generation failed" in item["error_message"]
-        assert "cannot display" in item["error_message"]
+        assert item["error_message"] == "Certificate generation failed."
         assert item["download_url"] is None
 
     success_list = get_certificate_list(client, job_id, "?status=success")
@@ -120,7 +118,6 @@ def test_job_with_unsupported_course_name_fails(client, certs_dir):
     assert body["failed_count"] == 2
 
     for item in get_certificate_list(client, job_id)["certificates"]:
-        assert item["error_message"] is not None
-        assert "Course name" in item["error_message"]
+        assert item["error_message"] == "Certificate generation failed."
 
     assert os.listdir(certs_dir) == []

@@ -33,6 +33,11 @@ def _safe_remove_generated_pdf(output_path) -> None:
     except OSError:
         pass
 
+# A stable public error is used instead of raw exception text, which may contain
+# internal paths or implementation details.
+CERTIFICATE_GENERATION_ERROR_MESSAGE = "Certificate generation failed."
+GENERATION_ERROR_MESSAGE = CERTIFICATE_GENERATION_ERROR_MESSAGE
+CERTIFICATE_GENERATION_FAILED_MESSAGE = CERTIFICATE_GENERATION_ERROR_MESSAGE
 
 # Backwards-compatible names for direct tests and future callers.
 safe_remove_generated_pdf = _safe_remove_generated_pdf
@@ -80,7 +85,7 @@ def process_job(job_id: str) -> None:
                     if os.path.exists(output_path):
                         _safe_remove_generated_pdf(output_path)
                     certificate.status = "failed"
-                    certificate.error_message = f"Certificate generation failed: {error}"
+                    certificate.error_message = CERTIFICATE_GENERATION_ERROR_MESSAGE
                     job.failed_count += 1
                 else:
                     certificate.status = "success"

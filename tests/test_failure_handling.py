@@ -36,8 +36,7 @@ def test_one_failing_certificate_does_not_stop_others(client, session_factory, m
     items = get_certificate_list(client, job_id)["certificates"]
     failed_item = next(item for item in items if item["recipient_name"] == "Fail Me")
     assert failed_item["status"] == "failed"
-    assert "Certificate generation failed" in failed_item["error_message"]
-    assert "forced failure" in failed_item["error_message"]
+    assert failed_item["error_message"] == "Certificate generation failed."
     assert failed_item["download_url"] is None
     assert sum(1 for item in items if item["status"] == "success") == 2
 
@@ -210,4 +209,41 @@ def test_generation_error_remains_original_when_partial_cleanup_fails(client, mo
     assert response.json()["status"] == "failed"
 
     items = get_certificate_list(client, job_id)["certificates"]
-    assert all("forced failure" in item["error_message"] for item in items)
+    assert all(item["error_message"] == "Certificate generation failed." for item in items)
+
+
+def test_generation_exception_details_are_not_exposed(client, session_factory, monkeypatch, certs_dir):
+    private_path = r"C:\private\internal-certificate.pdf"
+
+    def broken(recipient_name, course_name, issue_date, output_path):
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, "wb") as output_file:
+            output_file.write(b"partial")
+        raise RuntimeError("cannot write " + private_path)
+
+    monkeypatch.setattr("app.services.job_processor.generate_certificate_pdf", broken)
+
+    data = submit(client, [ANNA])
+    job_id = data["job_id"]
+
+    response = client.get(f"/jobs/{job_id}")
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+
+    items = get_certificate_list(client, job_id)["certificates"]
+    assert len(items) == 1
+    assert items[0]["error_message"] == "Certificate generation failed."
+    assert private_path not in items[0]["error_message"]
+    assert "cannot write" not in items[0]["error_message"]
+
+    from app.models.certificate import Certificate
+
+    db = session_factory()
+    try:
+        row = db.query(Certificate).filter(
+            Certificate.job_id == job_id, Certificate.status == "failed"
+        ).first()
+        assert row is not None
+        assert row.error_message == "Certificate generation failed."
+    finally:
+        db.close()
